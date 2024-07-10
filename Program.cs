@@ -1,29 +1,57 @@
 ﻿// See https://aka.ms/new-console-template for more information
 using System.Collections.Concurrent;
+using System.Net.NetworkInformation;
 using System.Runtime.ExceptionServices;
 
-Console.WriteLine("Hello, World!");
+Console.Write("Hello, ");
 
+MyTask.iterate(PrintAsync()).Wait();
 
-AsyncLocal<int> asyncLocal=new();
-List<MyTask> tasks=new List<MyTask>();
-for(int i=0; i<100;i++)
+static IEnumerable<MyTask> PrintAsync()
 {
-    asyncLocal.Value=i;
-    tasks.Add(MyTask.Run(()=>
+    for(int i=0;i<1000; i++)
     {
-        Console.WriteLine($"Value of AsyncLocal is {asyncLocal.Value} and Thread Id is {Thread.CurrentThread.ManagedThreadId}");
-Thread.Sleep(1000);
-    }));
+        yield return MyTask.Delay(1000);
+        Console.WriteLine(i);
+    }
+}
 
-}
-foreach (MyTask task in tasks)
-{
-  
-    task.Wait();
-    Console.WriteLine($"Thread id is {Thread.CurrentThread.ManagedThreadId}");
-}
-Console.WriteLine("All Task Done");
+
+//MyTask.Delay(2000).ContinueWith(delegate
+//{
+//    Console.Write("World");
+//    return MyTask.Delay(2000).ContinueWith(delegate 
+//    {
+//        Console.Write("Balaji");
+//        //return MyTask.Delay(2000).ContinueWith(delegate
+//        //{
+//        //    Console.Write("Balaji");
+//        //});
+//    });
+//}).Wait();
+
+
+//AsyncLocal<int> asyncLocal=new();
+//List<MyTask> tasks=new List<MyTask>();
+//for(int i=0; i<100;i++)
+//{
+//    asyncLocal.Value=i;
+//    tasks.Add(MyTask.Run(()=>
+//    {
+//        Console.WriteLine($"Value of AsyncLocal is {asyncLocal.Value} and Thread Id is {Thread.CurrentThread.ManagedThreadId}");
+//Thread.Sleep(1000);
+//    }));
+
+//}
+//MyTask.WhenAll(tasks).Wait();
+//foreach (MyTask task in tasks)
+//{
+
+//    task.Wait();
+//    Console.WriteLine($"Thread id is {Thread.CurrentThread.ManagedThreadId}");
+//}
+Console.WriteLine("All Done");
+Console.ReadLine();
 class MyTask
 {
 
@@ -69,12 +97,38 @@ class MyTask
 
     }
 
+    public static MyTask WhenAll(List<MyTask> tasks)
+    {
+        MyTask task = new();
+        if(tasks.Count==0)
+        {
+            task.SetResult();
+        }
+
+        int taskcount= tasks.Count;
+        Action Continuation = () => {
+
+            if(Interlocked.Decrement(ref taskcount)==0)
+            {
+                task.SetResult();
+
+            }
+        };
+
+        foreach(var t in tasks)
+        {
+            t._continuation = Continuation;
+        }
+        return task;
+
+    }
+
     public void Wait()
     {
        ManualResetEventSlim? manualResetEventSlim =null;
        lock(this)
        {
-            Console.WriteLine($"Thread Id is {Thread.CurrentThread.ManagedThreadId} and Completed {_completed}");
+          //  Console.WriteLine($"Thread Id is {Thread.CurrentThread.ManagedThreadId} and Completed {_completed}");
         if(!_completed) 
         {
             manualResetEventSlim=new();
@@ -82,29 +136,79 @@ class MyTask
         }
 
        }
+       
        manualResetEventSlim?.Wait();
-
+        
         if (_exception is not null)
         {
             ExceptionDispatchInfo.Throw(_exception);
         }
+
+      
+    }
+
+    public static MyTask Delay(int Interval)
+    {
+        MyTask myTask = new();
+        new Timer(_ => myTask.SetResult()).Change(Interval, -1);
+        return myTask;
     }
 
     public MyTask ContinueWith(Action action)
     {
+        MyTask t = new();
+
+        Action callback = () =>
+        {
+            try
+            {
+                action();
+            }
+            catch (Exception e)
+            {
+                t.SetException(e);
+                return;
+            }
+            t.SetResult();
+        };
+
+        lock (this)
+        {
+            if (_completed)
+            {
+                MyThreadPool.QueueUserWorkItem(callback);
+            }
+            else
+            {
+                _continuation = callback;
+                _context = ExecutionContext.Capture();
+            }
+        }
+
+        return t;
+    }
+
+    public MyTask ContinueWith(Func<MyTask> action)
+    {
         MyTask t=new();
        Action callback=() =>
        {
-        try
-        {
-            action();
-               Console.WriteLine($"Thread id inside continue is {Thread.CurrentThread.ManagedThreadId}");
+           try
+           {
+               MyTask next = action();
+               next.ContinueWith(delegate
+               {
+                   if (next._exception is not null) { t.SetException(next._exception); }
+                   else { t.SetResult(); }
+               });
+               // Console.WriteLine($"Thread id inside continue is {Thread.CurrentThread.ManagedThreadId}");
            }
-        catch (Exception ex)
-        {
-            t.SetException(ex);
-        }
-        t.SetResult();
+           catch (Exception ex)
+           {
+               t.SetException(ex);
+               return;
+           }
+      //  t.SetResult();
        };
 
        lock(this)
@@ -120,6 +224,35 @@ class MyTask
         }
        }
        return t;
+    }
+
+    public static MyTask iterate(IEnumerable<MyTask> tasks)
+    {
+        MyTask t=new MyTask();
+        IEnumerator<MyTask> e=tasks.GetEnumerator();
+        void MoveNext()
+        {
+            try
+            {
+                while(e.MoveNext())
+                {
+                    MyTask next=e.Current;
+                    if (next._isCompleted)
+                    {
+                        next.Wait();
+                        continue;
+                    }
+                    next.ContinueWith(MoveNext);
+                    return;
+                }
+            }
+            catch(Exception ex) {
+
+                t.SetException(ex); return;
+            }
+        }
+        MoveNext();
+        return t;
     }
 
 public static MyTask  Run(Action action)
