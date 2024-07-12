@@ -1,20 +1,32 @@
 ﻿// See https://aka.ms/new-console-template for more information
 using System.Collections.Concurrent;
 using System.Net.NetworkInformation;
+using System.Runtime.CompilerServices;
 using System.Runtime.ExceptionServices;
 
 Console.Write("Hello, ");
 
-MyTask.iterate(PrintAsync()).Wait();
+//MyTask.iterate(PrintAsync()).Wait();
+PrintAsync().Wait();
 
-static IEnumerable<MyTask> PrintAsync()
+//static IEnumerable<MyTask> PrintAsync()
+//{
+//    for(int i=0;i<1000; i++)
+//    {
+//        yield return MyTask.Delay(1000);
+//        Console.WriteLine(i);
+//    }
+//}
+
+static async Task PrintAsync()
 {
-    for(int i=0;i<1000; i++)
+    for (int i = 0; i < 1000; i++)
     {
-        yield return MyTask.Delay(1000);
+        await MyTask.Delay(1000);
         Console.WriteLine(i);
     }
 }
+
 
 
 //MyTask.Delay(2000).ContinueWith(delegate
@@ -66,6 +78,27 @@ class MyTask
             lock(this)
             {
             return _completed;
+            }
+        }
+    }
+
+    public struct Awaiter(MyTask t):INotifyCompletion
+    {
+        public Awaiter GetAwaiter() => this;
+        public bool IsCompleted => t._isCompleted;
+        public void OnCompleted(Action continuation)=> t.ContinueWith(continuation);
+        public void GetResult() => t.Wait();
+
+    }
+    public Awaiter GetAwaiter() => new(this);
+
+    public bool IsCompleted
+    {
+        get
+        {
+            lock (this)
+            {
+                return _completed;
             }
         }
     }
@@ -250,6 +283,7 @@ class MyTask
 
                 t.SetException(ex); return;
             }
+            t.SetResult();
         }
         MoveNext();
         return t;
